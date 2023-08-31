@@ -180,7 +180,7 @@ export async function build(_options: CliOptions) {
     postTransform.forEach(({ id, code, transformedCode }) => {
       code = transformedCode ?? code
 
-      const outFile = relative(options.cwd || process.cwd(),
+      const outFile = resolve(options.cwd || process.cwd(),
         // out file placeholder
         isPlacholder
           ? placeholderReplacer(id)
