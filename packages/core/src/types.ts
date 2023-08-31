@@ -827,9 +827,16 @@ export type PreparedRule = readonly [
   noMerge: boolean,
 ]
 
+export interface OutFileArgs {
+  name: string
+  dirname: string
+}
+
+export type OutFileHandler = (args: OutFileArgs) => string
+
 export interface CliEntryItem {
   patterns: string[]
-  outFile: string
+  outFile: string | OutFileHandler
 }
 
 export interface UtilObject {

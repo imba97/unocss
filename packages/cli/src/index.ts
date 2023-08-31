@@ -13,9 +13,11 @@ import { version } from '../package.json'
 import { defaultConfig } from './config'
 import { PrettyError, handleError } from './errors'
 import { getWatcher } from './watcher'
-import type { CliOptions, ResolvedCliOptions } from './types'
+import type { CliOptions, OutFileArgs, OutFileData, OutFileHandler, ResolvedCliOptions } from './types'
 
 const name = 'unocss'
+const placeholderRegexp = /\[(\w+)\]/g
+const placeholderCache = new Map<string, OutFileArgs>()
 
 export async function resolveOptions(options: CliOptions) {
   if (!options.patterns?.length) {
@@ -110,12 +112,42 @@ export async function build(_options: CliOptions) {
       })))
   }
 
+  function getPlaceholderInfo(id: string): OutFileArgs {
+    if (placeholderCache.has(id))
+      return placeholderCache.get(id)!
+
+    const path = relative(cwd, id)
+    const [name] = basename(path).split('.')
+
+    const info: OutFileArgs = {
+      name,
+      dirname: dirname(path),
+    }
+
+    placeholderCache.set(id, info)
+
+    return info
+  }
+
+  function placeholderReplacer(id: string): string {
+    if (!options.outFile)
+      return 'uno.css'
+
+    const info = getPlaceholderInfo(id)
+
+    return (options.outFile as string).replace(placeholderRegexp, (_match: string, placeholder: string) => {
+      return info[placeholder as keyof OutFileArgs] ?? placeholder
+    })
+  }
+
   async function generate(options: ResolvedCliOptions) {
     const sourceCache = Array.from(fileCache).map(([id, code]) => ({ id, code }))
 
     const preTransform = await transformFiles(sourceCache, 'pre')
     const defaultTransform = await transformFiles(preTransform)
     const postTransform = await transformFiles(defaultTransform, 'post')
+
+    const outFileCodes = new Map<string, string[]>()
 
     // update source file
     if (options.writeTransformed) {
@@ -129,31 +161,71 @@ export async function build(_options: CliOptions) {
       )
     }
 
-    const { css, matched } = await ctx.uno.generate(
-      [...postTransform.map(({ code, transformedCode }) => transformedCode ?? code)].join('\n'),
-      {
-        preflights: options.preflights,
-        minify: options.minify,
-      },
-    )
-
     if (options.stdout) {
+      const { css } = await ctx.uno.generate(
+        [...postTransform.map(({ code, transformedCode }) => transformedCode ?? code)].join('\n'),
+        {
+          preflights: options.preflights,
+          minify: options.minify,
+        },
+      )
+
       process.stdout.write(css)
       return
     }
 
-    const outFile = resolve(options.cwd || process.cwd(), options.outFile ?? 'uno.css')
-    const dir = dirname(outFile)
-    if (!existsSync(dir))
-      await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(outFile, css, 'utf-8')
+    const isPlacholder = typeof options.outFile === 'string' && placeholderRegexp.test(options.outFile)
+    const isHandler = typeof options.outFile === 'function'
 
-    if (!options.watch) {
-      consola.success(
-      `${[...matched].length} utilities generated to ${cyan(
-        relative(process.cwd(), outFile),
-      )}\n`,
+    postTransform.forEach(({ id, code, transformedCode }) => {
+      code = transformedCode ?? code
+
+      const outFile = relative(options.cwd || process.cwd(),
+        // out file placeholder
+        isPlacholder
+          ? placeholderReplacer(id)
+          // out file function
+          : isHandler
+            ? (options.outFile as OutFileHandler)(getPlaceholderInfo(id))
+            // out file
+            : options.outFile as string || 'uno.css',
       )
-    }
+
+      if (outFileCodes.has(outFile)) {
+        const codes = outFileCodes.get(outFile)!
+        codes.push(code)
+        return
+      }
+
+      outFileCodes.set(outFile, [code])
+    })
+
+    const outFileCodesList = [...outFileCodes].map(([outFile, codes]) => ({ outFile, codes }))
+
+    const outFiles: OutFileData[] = await Promise.all<Promise<OutFileData>[]>(outFileCodesList.map(({ outFile, codes }) => new Promise((resolve) => {
+      ctx.uno.generate(
+        codes.join('\n'),
+        {
+          preflights: options.preflights,
+          minify: options.minify,
+        },
+      ).then(({ css, matched }) => resolve({ outFile, css, matched }))
+    })))
+
+    outFiles.forEach(async ({ outFile, css, matched }) => {
+      const dir = dirname(outFile)
+      if (!existsSync(dir))
+        await fs.mkdir(dir, { recursive: true })
+
+      await fs.writeFile(outFile, css, 'utf-8')
+
+      if (!options.watch) {
+        consola.success(
+          `${[...matched].length} utilities generated to ${cyan(
+            relative(process.cwd(), outFile!),
+          )}\n`,
+        )
+      }
+    })
   }
 }

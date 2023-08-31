@@ -105,9 +105,22 @@ interface CliEntryItem {
    */
   patterns: string[]
   /**
-   * The output filename for the generated UnoCSS file
+   * The output filename or an handler for the generated UnoCSS file
    */
-  outFile: string
+  outFile: string | OutFileHandler
+}
+
+/**
+ * filename handler
+ */
+type OutFileHandler = (args: OutFileArgs) => string
+
+/**
+ * filename handler arguments
+ */
+interface OutFileArgs {
+  name: string
+  dirname: string
 }
 ```
 
